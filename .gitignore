@@ -22,6 +22,7 @@ htmlcov/
 
 # Training artifacts
 runs_modified_inception/
+experiments_inception/
 tf_tb_logs/
 plots/
 

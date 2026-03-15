@@ -6,6 +6,17 @@ from typing import Dict, List, Tuple
 
 
 def parse_args() -> argparse.Namespace:
+    """Interpreta os argumentos de linha de comando do gerador de graficos SVG.
+
+    Parametros de entrada:
+        Nenhum parametro posicional direto. A funcao le os argumentos de linha de
+        comando relacionados ao diretorio do experimento e ao diretorio opcional
+        de saida dos graficos.
+
+    Parametros de saida:
+        argparse.Namespace: objeto com os caminhos e opcoes necessarios para a
+        execucao do script.
+    """
     parser = argparse.ArgumentParser(description="Gera graficos SVG de um run de treino.")
     parser.add_argument("--run-dir", type=str, required=True, help="Diretorio do run (history/metrics/confusion).")
     parser.add_argument(
@@ -18,6 +29,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_history(path: Path) -> Dict[str, List[float]]:
+    """Carrega o historico de treinamento salvo em CSV para memoria.
+
+    Parametros de entrada:
+        path (Path): caminho do arquivo ``history.csv`` gerado pelo experimento.
+
+    Parametros de saida:
+        Dict[str, List[float]]: dicionario em que cada chave representa uma
+        metrica por epoca e cada valor contem a sequencia numerica correspondente.
+    """
     data: Dict[str, List[float]] = {}
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -32,11 +52,28 @@ def load_history(path: Path) -> Dict[str, List[float]]:
 
 
 def load_metrics(path: Path) -> Dict:
+    """Carrega o arquivo JSON com as metricas agregadas do experimento.
+
+    Parametros de entrada:
+        path (Path): caminho do arquivo ``metrics.json``.
+
+    Parametros de saida:
+        Dict: dicionario com as metricas serializadas no experimento.
+    """
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_confusion(path: Path) -> List[List[int]]:
+    """Le a matriz de confusao em CSV simples e a converte para lista numerica.
+
+    Parametros de entrada:
+        path (Path): caminho do arquivo ``confusion_matrix.csv``.
+
+    Parametros de saida:
+        List[List[int]]: matriz de confusao representada como lista de linhas com
+        valores inteiros.
+    """
     matrix: List[List[int]] = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -48,6 +85,16 @@ def load_confusion(path: Path) -> List[List[int]]:
 
 
 def load_class_names(split_manifest: Path) -> List[str]:
+    """Recupera os nomes de classe a partir do manifesto de split do experimento.
+
+    Parametros de entrada:
+        split_manifest (Path): caminho do arquivo ``split_manifest.csv`` que
+        associa indices numericos aos nomes textuais das classes.
+
+    Parametros de saida:
+        List[str]: lista ordenada pelo indice da classe contendo os nomes das
+        classes presentes no experimento.
+    """
     mapping: Dict[int, str] = {}
     with split_manifest.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -58,12 +105,35 @@ def load_class_names(split_manifest: Path) -> List[str]:
 
 
 def map_x(i: int, n: int, x0: float, x1: float) -> float:
+    """Converte um indice discreto de epoca em coordenada horizontal no SVG.
+
+    Parametros de entrada:
+        i (int): indice do ponto a ser projetado.
+        n (int): quantidade total de pontos disponiveis.
+        x0 (float): coordenada horizontal inicial da area util do grafico.
+        x1 (float): coordenada horizontal final da area util do grafico.
+
+    Parametros de saida:
+        float: coordenada ``x`` correspondente ao indice informado.
+    """
     if n <= 1:
         return (x0 + x1) / 2.0
     return x0 + (x1 - x0) * (i / (n - 1))
 
 
 def map_y(v: float, vmin: float, vmax: float, y0: float, y1: float) -> float:
+    """Converte um valor numerico em coordenada vertical dentro do SVG.
+
+    Parametros de entrada:
+        v (float): valor da metrica a ser posicionado.
+        vmin (float): menor valor do intervalo de referencia.
+        vmax (float): maior valor do intervalo de referencia.
+        y0 (float): coordenada vertical superior da area util do grafico.
+        y1 (float): coordenada vertical inferior da area util do grafico.
+
+    Parametros de saida:
+        float: coordenada ``y`` correspondente ao valor fornecido.
+    """
     if vmax <= vmin:
         return (y0 + y1) / 2.0
     ratio = (v - vmin) / (vmax - vmin)
@@ -71,11 +141,36 @@ def map_y(v: float, vmin: float, vmax: float, y0: float, y1: float) -> float:
 
 
 def polyline(points: List[Tuple[float, float]], color: str, width: int = 2) -> str:
+    """Monta o elemento SVG ``polyline`` para desenhar uma serie temporal.
+
+    Parametros de entrada:
+        points (List[Tuple[float, float]]): lista ordenada de coordenadas do
+            traco a ser desenhado.
+        color (str): cor da linha em formato CSS/SVG.
+        width (int): espessura do traco em pixels.
+
+    Parametros de saida:
+        str: trecho de markup SVG correspondente a polilinha.
+    """
     pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
     return f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="{width}" />'
 
 
 def line(x1: float, y1: float, x2: float, y2: float, color: str, width: int = 1, dash: str = "") -> str:
+    """Monta o elemento SVG ``line`` para eixos, grades ou marcadores.
+
+    Parametros de entrada:
+        x1 (float): coordenada horizontal inicial.
+        y1 (float): coordenada vertical inicial.
+        x2 (float): coordenada horizontal final.
+        y2 (float): coordenada vertical final.
+        color (str): cor da linha em formato CSS/SVG.
+        width (int): espessura da linha em pixels.
+        dash (str): padrao opcional de tracejado no formato aceito por SVG.
+
+    Parametros de saida:
+        str: trecho de markup SVG correspondente a linha gerada.
+    """
     dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
     return (
         f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
@@ -84,6 +179,19 @@ def line(x1: float, y1: float, x2: float, y2: float, color: str, width: int = 1,
 
 
 def text(x: float, y: float, value: str, size: int = 12, anchor: str = "middle", color: str = "#1f2937") -> str:
+    """Monta um elemento SVG ``text`` com escape basico de caracteres especiais.
+
+    Parametros de entrada:
+        x (float): coordenada horizontal do texto.
+        y (float): coordenada vertical do texto.
+        value (str): conteudo textual a ser exibido.
+        size (int): tamanho da fonte em pixels.
+        anchor (str): alinhamento horizontal do texto no padrao SVG.
+        color (str): cor do texto em formato CSS/SVG.
+
+    Parametros de saida:
+        str: trecho de markup SVG correspondente ao texto formatado.
+    """
     safe = value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return (
         f'<text x="{x:.2f}" y="{y:.2f}" font-size="{size}" text-anchor="{anchor}" '
@@ -99,6 +207,19 @@ def make_metric_svg(
     test_value: float,
     out_path: Path,
 ) -> None:
+    """Gera um grafico SVG de evolucao de metrica ao longo das epocas.
+
+    Parametros de entrada:
+        title (str): titulo principal do grafico.
+        y_label (str): rotulo do eixo vertical.
+        train_vals (List[float]): serie da metrica observada no treino.
+        val_vals (List[float]): serie da metrica observada na validacao.
+        test_value (float): valor final da metrica medido no conjunto de teste.
+        out_path (Path): caminho do arquivo SVG de saida.
+
+    Parametros de saida:
+        None: a funcao grava o arquivo SVG em disco e nao retorna valor.
+    """
     w, h = 1100, 650
     ml, mr, mt, mb = 90, 40, 70, 90
     x0, x1 = ml, w - mr
@@ -159,6 +280,16 @@ def make_metric_svg(
 
 
 def make_confusion_svg(matrix: List[List[int]], class_names: List[str], out_path: Path) -> None:
+    """Gera um SVG para representar visualmente a matriz de confusao.
+
+    Parametros de entrada:
+        matrix (List[List[int]]): matriz de confusao com contagens por classe.
+        class_names (List[str]): nomes das classes usados nos eixos do grafico.
+        out_path (Path): caminho do arquivo SVG de saida.
+
+    Parametros de saida:
+        None: a funcao grava o SVG em disco e nao retorna valor.
+    """
     n = len(matrix)
     cell = 90
     ml, mt = 280, 110
@@ -201,6 +332,17 @@ def make_confusion_svg(matrix: List[List[int]], class_names: List[str], out_path
 
 
 def main() -> None:
+    """Coordena a leitura dos artefatos do experimento e a geracao dos SVGs.
+
+    Parametros de entrada:
+        Nenhum parametro direto. A funcao utiliza os argumentos obtidos por
+        ``parse_args()`` para localizar os artefatos do run e decidir onde os
+        graficos serao salvos.
+
+    Parametros de saida:
+        None: a funcao gera os arquivos SVG no diretorio de saida e imprime um
+        resumo no terminal, sem retornar valor.
+    """
     args = parse_args()
     run_dir = Path(args.run_dir).resolve()
     out_dir = Path(args.out_dir).resolve() if args.out_dir else run_dir

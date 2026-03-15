@@ -7,6 +7,17 @@ from train_modified_inception_repro import build_model
 
 
 def parse_args() -> argparse.Namespace:
+    """Interpreta os argumentos de linha de comando do utilitario de visualizacao.
+
+    Parametros de entrada:
+        Nenhum parametro posicional direto. A funcao le os argumentos informados
+        na linha de comando, incluindo tamanho da imagem, quantidade de classes,
+        unidades da camada densa e caminho opcional para salvar o grafo.
+
+    Parametros de saida:
+        argparse.Namespace: objeto contendo os argumentos normalizados para a
+        execucao do script.
+    """
     parser = argparse.ArgumentParser(description="Mostra a arquitetura da rede no terminal.")
     parser.add_argument("--image-size", type=int, default=299)
     parser.add_argument("--dense-units", type=int, default=256)
@@ -21,6 +32,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def print_ascii_overview(model: tf.keras.Model) -> None:
+    """Exibe no terminal um resumo textual curto da arquitetura da rede.
+
+    Parametros de entrada:
+        model (tf.keras.Model): modelo Keras ja construido cuja arquitetura sera
+            descrita de forma resumida no terminal.
+
+    Parametros de saida:
+        None: a funcao apenas escreve informacoes no terminal e nao retorna valor.
+    """
     print("\n=== Arquitetura (visao rapida) ===")
     print("Input")
     print("  -> InceptionV3 backbone (include_top=False)")
@@ -33,6 +53,16 @@ def print_ascii_overview(model: tf.keras.Model) -> None:
 
 
 def print_summary(model: tf.keras.Model) -> None:
+    """Captura e imprime no terminal a saida completa de ``model.summary()``.
+
+    Parametros de entrada:
+        model (tf.keras.Model): modelo Keras que sera detalhado com a listagem
+            completa de camadas, formatos de tensor e quantidade de parametros.
+
+    Parametros de saida:
+        None: a funcao apenas envia a representacao textual do modelo para o
+        terminal e nao retorna valor.
+    """
     print("\n=== model.summary() ===")
     buf = StringIO()
     model.summary(print_fn=lambda x: buf.write(x + "\n"))
@@ -40,6 +70,17 @@ def print_summary(model: tf.keras.Model) -> None:
 
 
 def try_save_plot(model: tf.keras.Model, out_path: str) -> None:
+    """Tenta salvar uma imagem do grafo do modelo usando ``keras.utils.plot_model``.
+
+    Parametros de entrada:
+        model (tf.keras.Model): modelo Keras que tera o grafo exportado.
+        out_path (str): caminho de destino da imagem. Quando vazio, nenhuma
+            exportacao e realizada.
+
+    Parametros de saida:
+        None: a funcao salva a imagem quando possivel e escreve mensagens de
+        status no terminal, sem retornar valor.
+    """
     if not out_path:
         return
 
@@ -61,6 +102,15 @@ def try_save_plot(model: tf.keras.Model, out_path: str) -> None:
 
 
 def main() -> None:
+    """Coordena a construcao do modelo e a exibicao de suas representacoes.
+
+    Parametros de entrada:
+        Nenhum parametro direto. A funcao utiliza os argumentos obtidos por
+        ``parse_args()`` para configurar a construcao e a visualizacao do modelo.
+
+    Parametros de saida:
+        None: a funcao executa o fluxo principal do script e nao retorna valor.
+    """
     args = parse_args()
     model, _ = build_model(
         num_classes=args.num_classes,

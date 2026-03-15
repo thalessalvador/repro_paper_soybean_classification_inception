@@ -137,12 +137,28 @@ pip install -r requirements.txt
 
 ### 5. Rodar treino com GPU
 
-Dentro do container:
+Dentro do container `bash`, use sempre:
+
+- barra invertida `\` para quebra de linha
+- caminhos Linux no formato `/workspace/...`
+- nunca use crase do PowerShell `` ` `` nem caminhos `C:\\...` dentro do container
+
+Exemplo correto dentro do container:
 
 ```bash
 python train_modified_inception_repro.py \
   --dataset-dir /workspace/dataset_kaggle_soja \
   --out-dir /workspace/project/runs_modified_inception \
+  --tb-root-dir /workspace/project/tf_tb_logs
+```
+
+Exemplo correto para rodar os 5 folds completos com `batch-size 24` dentro do container:
+
+```bash
+python run_inception_cv.py \
+  --dataset-dir /workspace/dataset_kaggle_soja \
+  --out-dir /workspace/project/experiments_inception \
+  --batch-size 24 \
   --tb-root-dir /workspace/project/tf_tb_logs
 ```
 
@@ -184,3 +200,99 @@ Cada treino gera uma pasta em `runs_modified_inception/<timestamp>/` com:
 - Se usar `--disable-tensorboard`, o TensorBoard vai mostrar `No dashboards are active`.
 - No Windows local, o fluxo recomendado e CPU.
 - Para GPU com RTX 50xx, use Docker com backend WSL2.
+## Cross-validation (novo)
+
+O script principal agora suporta dois modos experimentais:
+
+- `--experiment-mode paper`: reproduz o split original do artigo.
+- `--experiment-mode cv`: executa um fold especifico da validacao cruzada estratificada.
+
+### Rodar paper mode
+
+```powershell
+python train_modified_inception_repro.py --experiment-mode paper --dataset-dir ..\dataset_kaggle_soja --disable-tensorboard
+```
+
+### Rodar um fold especifico
+
+```powershell
+python train_modified_inception_repro.py --experiment-mode cv --fold-index 0 --num-folds 5 --dataset-dir ..\dataset_kaggle_soja --disable-tensorboard
+```
+
+### Rodar os 5 folds e agregar resultados
+
+```powershell
+python run_inception_cv.py --dataset-dir ..\dataset_kaggle_soja --out-dir .\experiments_inception --disable-tensorboard
+```
+
+### Exemplo completo: 5 folds com `batch-size 24` e TensorBoard
+
+Janela 1: treino
+
+```powershell
+cd C:\Projetos\Pos_ia\TCC\impl-art-inception
+.\.venv\Scripts\Activate.ps1
+
+python run_inception_cv.py `
+  --dataset-dir C:\Projetos\Pos_ia\TCC\dataset_kaggle_soja `
+  --out-dir C:\Projetos\Pos_ia\TCC\impl-art-inception\experiments_inception `
+  --batch-size 24 `
+  --tb-root-dir C:\Projetos\Pos_ia\TCC\impl-art-inception\tf_tb_logs
+```
+
+Janela 2: TensorBoard
+
+```powershell
+cd C:\Projetos\Pos_ia\TCC\impl-art-inception
+.\.venv\Scripts\Activate.ps1
+
+tensorboard --logdir C:\Projetos\Pos_ia\TCC\impl-art-inception\tf_tb_logs
+```
+
+Abrir no navegador:
+
+```text
+http://localhost:6006
+```
+
+Se a porta `6006` estiver ocupada:
+
+```powershell
+tensorboard --logdir C:\Projetos\Pos_ia\TCC\impl-art-inception\tf_tb_logs --port 6007
+```
+
+Ao final, o agregador gera:
+
+- `cv_summary.json`
+- `cv_summary.csv`
+
+na raiz do experimento `cv_run_<timestamp>`.
+
+Cada fold e salvo como:
+
+```text
+experiments_inception/
+  cv_run_<timestamp>/
+    fold_0/
+    fold_1/
+    fold_2/
+    fold_3/
+    fold_4/
+```
+
+Cada pasta `fold_<i>` contem os artefatos principais do plano de refatoracao:
+
+- `fold_manifest.csv`
+- `history.csv`
+- `metrics.json`
+- `predictions.csv`
+- `confusion_matrix.csv`
+- `final_model.keras`
+- `run_config.json`
+
+Observacoes sobre o modo `cv`:
+
+- `predictions.csv` salva, por amostra de teste, o caminho da imagem, classe real, classe predita, campo `correct` e a confianca `top1`.
+- `fold_manifest.csv` documenta integralmente a composicao de `train`, `val` e `test` de cada fold.
+- O split estratificado nao usa `StratifiedKFold` do scikit-learn, mas implementa a estratificacao manualmente por classe, de forma deterministica.
+- A regra do fold e: `test = fold_i`, `val = subconjunto estratificado retirado apenas de train_val`, `train = restante de train_val`.

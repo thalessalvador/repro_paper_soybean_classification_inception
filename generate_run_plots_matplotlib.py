@@ -8,6 +8,16 @@ import numpy as np
 
 
 def parse_args() -> argparse.Namespace:
+    """Interpreta os argumentos de linha de comando do gerador de graficos PNG.
+
+    Parametros de entrada:
+        Nenhum parametro posicional direto. A funcao le os argumentos referentes
+        ao diretorio do experimento e ao diretorio opcional de saida das imagens.
+
+    Parametros de saida:
+        argparse.Namespace: objeto com a configuracao necessaria para a execucao
+        do script.
+    """
     parser = argparse.ArgumentParser(description="Gera graficos (matplotlib) para um run de treino.")
     parser.add_argument("--run-dir", required=True, type=str, help="Diretorio do run.")
     parser.add_argument("--out-dir", default=None, type=str, help="Diretorio de saida dos graficos.")
@@ -15,6 +25,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_history(path: Path) -> dict:
+    """Carrega o historico de treinamento salvo em CSV.
+
+    Parametros de entrada:
+        path (Path): caminho do arquivo ``history.csv`` do experimento.
+
+    Parametros de saida:
+        dict: dicionario em que cada chave representa uma metrica e cada valor
+        contem a lista de valores por epoca.
+    """
     data = {}
     with path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -25,11 +44,27 @@ def load_history(path: Path) -> dict:
 
 
 def load_metrics(path: Path) -> dict:
+    """Carrega o arquivo JSON de metricas do experimento.
+
+    Parametros de entrada:
+        path (Path): caminho do arquivo ``metrics.json``.
+
+    Parametros de saida:
+        dict: dicionario com as metricas carregadas do arquivo.
+    """
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_confusion(path: Path) -> np.ndarray:
+    """Carrega a matriz de confusao de um CSV simples para um array NumPy.
+
+    Parametros de entrada:
+        path (Path): caminho do arquivo ``confusion_matrix.csv``.
+
+    Parametros de saida:
+        np.ndarray: matriz de confusao com tipo inteiro.
+    """
     rows = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -40,6 +75,15 @@ def load_confusion(path: Path) -> np.ndarray:
 
 
 def load_class_names(split_manifest: Path) -> list[str]:
+    """Recupera os nomes de classe ordenados a partir do manifesto do split.
+
+    Parametros de entrada:
+        split_manifest (Path): caminho do arquivo ``split_manifest.csv`` que
+        mapeia indices numericos para nomes textuais de classe.
+
+    Parametros de saida:
+        list[str]: lista ordenada pelos indices das classes.
+    """
     idx_to_name = {}
     with split_manifest.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -49,6 +93,16 @@ def load_class_names(split_manifest: Path) -> list[str]:
 
 
 def plot_accuracy(history: dict, test_acc: float, out_path: Path) -> None:
+    """Gera e salva o grafico PNG da evolucao de acuracia.
+
+    Parametros de entrada:
+        history (dict): historico de treinamento contendo as series por epoca.
+        test_acc (float): valor de acuracia final medido no conjunto de teste.
+        out_path (Path): caminho do arquivo PNG de saida.
+
+    Parametros de saida:
+        None: a funcao salva o grafico em disco e nao retorna valor.
+    """
     epochs = np.array(history["epoch"], dtype=int)
     train_acc = np.array(history["accuracy"], dtype=float)
     val_acc = np.array(history["val_accuracy"], dtype=float)
@@ -68,6 +122,16 @@ def plot_accuracy(history: dict, test_acc: float, out_path: Path) -> None:
 
 
 def plot_loss(history: dict, test_loss: float, out_path: Path) -> None:
+    """Gera e salva o grafico PNG da evolucao da funcao de perda.
+
+    Parametros de entrada:
+        history (dict): historico de treinamento contendo as series por epoca.
+        test_loss (float): valor final de loss medido no conjunto de teste.
+        out_path (Path): caminho do arquivo PNG de saida.
+
+    Parametros de saida:
+        None: a funcao salva o grafico em disco e nao retorna valor.
+    """
     epochs = np.array(history["epoch"], dtype=int)
     train_loss = np.array(history["loss"], dtype=float)
     val_loss = np.array(history["val_loss"], dtype=float)
@@ -87,6 +151,16 @@ def plot_loss(history: dict, test_loss: float, out_path: Path) -> None:
 
 
 def plot_confusion(cm: np.ndarray, class_names: list[str], out_path: Path) -> None:
+    """Gera e salva o grafico PNG da matriz de confusao.
+
+    Parametros de entrada:
+        cm (np.ndarray): matriz de confusao com contagens por classe.
+        class_names (list[str]): nomes das classes para rotular os eixos.
+        out_path (Path): caminho do arquivo PNG de saida.
+
+    Parametros de saida:
+        None: a funcao salva o grafico em disco e nao retorna valor.
+    """
     plt.figure(figsize=(9, 7), dpi=150)
     im = plt.imshow(cm, interpolation="nearest", cmap="Blues")
     plt.title("Matriz de Confusao")
@@ -110,6 +184,17 @@ def plot_confusion(cm: np.ndarray, class_names: list[str], out_path: Path) -> No
 
 
 def main() -> None:
+    """Coordena a leitura dos artefatos do run e a geracao dos graficos PNG.
+
+    Parametros de entrada:
+        Nenhum parametro direto. A funcao utiliza os argumentos obtidos em
+        ``parse_args()`` para localizar os arquivos do experimento e decidir o
+        diretorio de saida das imagens.
+
+    Parametros de saida:
+        None: a funcao gera os arquivos PNG e imprime um resumo no terminal,
+        sem retornar valor.
+    """
     args = parse_args()
     run_dir = Path(args.run_dir).resolve()
     out_dir = Path(args.out_dir).resolve() if args.out_dir else run_dir

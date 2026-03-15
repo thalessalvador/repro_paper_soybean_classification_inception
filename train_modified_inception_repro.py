@@ -64,6 +64,24 @@ class SplitData:
 
 
 @dataclass
+class DatasetItem:
+    """Representa um item individual do inventario do dataset.
+
+    Args:
+        path: caminho absoluto ou relativo da imagem.
+        class_name: nome textual da classe.
+        class_idx: indice numerico da classe.
+
+    Returns:
+        Nenhum valor. A dataclass apenas encapsula os campos do inventario.
+    """
+
+    path: str
+    class_name: str
+    class_idx: int
+
+
+@dataclass
 class AugmentationConfig:
     mode: str
     flip_left_right: bool
@@ -101,6 +119,25 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=r"..\dataset_kaggle_soja",
         help="Diretorio do dataset (somente leitura).",
+    )
+    parser.add_argument(
+        "--experiment-mode",
+        type=str,
+        default="paper",
+        choices=["paper", "cv"],
+        help="Modo experimental: split original do paper ou validacao cruzada.",
+    )
+    parser.add_argument(
+        "--fold-index",
+        type=int,
+        default=None,
+        help="Indice do fold a executar quando --experiment-mode cv.",
+    )
+    parser.add_argument(
+        "--num-folds",
+        type=int,
+        default=5,
+        help="Quantidade de folds para validacao cruzada estratificada.",
     )
     parser.add_argument("--seed", type=int, default=42, help="Seed para split deterministico.")
     parser.add_argument("--image-size", type=int, default=299, help="Tamanho da imagem (paper: 299).")
@@ -244,75 +281,205 @@ def list_images(path: Path) -> List[Path]:
     return files
 
 
-def create_split(dataset_dir: Path, seed: int) -> SplitData:
-    """Monta split train/val/test por classe conforme tabela alvo do paper.
-
-    A funcao aplica embaralhamento deterministico por seed e separa arquivos
-    exatamente nas quantidades definidas em TARGET_SPLITS.
+def build_dataset_inventory(dataset_dir: Path) -> Tuple[List[DatasetItem], List[str]]:
+    """Constroi o inventario completo do dataset sem aplicar estrategia de split.
 
     Args:
-        dataset_dir: pasta raiz contendo uma subpasta por classe.
-        seed: seed usada no embaralhamento para tornar o split reproduzivel.
+        dataset_dir: diretorio raiz contendo uma subpasta por classe.
 
     Returns:
-        SplitData: estrutura com caminhos, labels e nomes de classe para os
-        tres subconjuntos.
+        Tuple[List[DatasetItem], List[str]]:
+            - lista completa de itens do dataset.
+            - nomes de classes na ordem dos indices.
 
     Raises:
-        FileNotFoundError: se alguma pasta de classe esperada nao existir.
-        ValueError: se uma classe nao tiver quantidade minima de imagens para
-        atender ao split especificado.
+        FileNotFoundError: se o diretorio raiz nao existir.
+        ValueError: se nenhuma classe com imagens for encontrada.
+    """
+    if not dataset_dir.exists():
+        raise FileNotFoundError(f"Dataset nao encontrado: {dataset_dir}")
+
+    discovered = sorted([p.name for p in dataset_dir.iterdir() if p.is_dir()])
+    class_names = [name for name in TARGET_SPLITS.keys() if name in discovered]
+    class_names.extend([name for name in discovered if name not in class_names])
+    if not class_names:
+        raise ValueError(f"Nenhuma subpasta de classe encontrada em {dataset_dir}")
+
+    class_to_idx = {name: idx for idx, name in enumerate(class_names)}
+    inventory: List[DatasetItem] = []
+    for class_name in class_names:
+        class_dir = dataset_dir / class_name
+        for image_path in list_images(class_dir):
+            inventory.append(
+                DatasetItem(
+                    path=str(image_path),
+                    class_name=class_name,
+                    class_idx=class_to_idx[class_name],
+                )
+            )
+    return inventory, class_names
+
+
+def _items_to_split_data(
+    train_items: List[DatasetItem],
+    val_items: List[DatasetItem],
+    test_items: List[DatasetItem],
+    class_names: List[str],
+) -> SplitData:
+    """Converte listas de itens inventariados para a estrutura SplitData.
+
+    Args:
+        train_items: itens alocados ao treino.
+        val_items: itens alocados a validacao.
+        test_items: itens alocados a teste.
+        class_names: nomes de classes na ordem dos indices.
+
+    Returns:
+        SplitData: estrutura consolidada contendo paths, labels e classes.
+    """
+    return SplitData(
+        train_paths=[item.path for item in train_items],
+        train_labels=[item.class_idx for item in train_items],
+        val_paths=[item.path for item in val_items],
+        val_labels=[item.class_idx for item in val_items],
+        test_paths=[item.path for item in test_items],
+        test_labels=[item.class_idx for item in test_items],
+        class_names=class_names,
+    )
+
+
+def generate_paper_split(dataset_inventory: List[DatasetItem], seed: int) -> SplitData:
+    """Reproduz o split deterministico descrito no paper original.
+
+    Args:
+        dataset_inventory: inventario completo do dataset.
+        seed: seed usada para embaralhamento deterministico.
+
+    Returns:
+        SplitData: subconjuntos train/val/test no formato original do paper.
+
+    Raises:
+        ValueError: se alguma classe do inventario nao estiver mapeada em TARGET_SPLITS
+            ou se nao houver imagens suficientes para reproduzir os totais do paper.
     """
     rng = np.random.default_rng(seed)
-    train_paths, train_labels = [], []
-    val_paths, val_labels = [], []
-    test_paths, test_labels = [], []
+    grouped: Dict[str, List[DatasetItem]] = defaultdict(list)
+    for item in dataset_inventory:
+        grouped[item.class_name].append(item)
 
-    class_names = sorted(TARGET_SPLITS.keys())
-    class_to_idx = {name: idx for idx, name in enumerate(class_names)}
+    class_names = sorted(grouped.keys(), key=lambda name: grouped[name][0].class_idx)
+    train_items: List[DatasetItem] = []
+    val_items: List[DatasetItem] = []
+    test_items: List[DatasetItem] = []
 
-    for class_name, counts in TARGET_SPLITS.items():
-        class_dir = dataset_dir / class_name
-        if not class_dir.exists():
-            raise FileNotFoundError(f"Classe nao encontrada: {class_dir}")
-
-        files = list_images(class_dir)
+    for class_name in class_names:
+        if class_name not in TARGET_SPLITS:
+            raise ValueError(f"Classe sem configuracao paper: {class_name}")
+        counts = TARGET_SPLITS[class_name]
+        items = list(grouped[class_name])
         expected_total = counts["train"] + counts["val"] + counts["test"]
-        if len(files) < expected_total:
+        if len(items) < expected_total:
             raise ValueError(
-                f"Classe {class_name} tem {len(files)} imagens, "
-                f"mas precisa de pelo menos {expected_total}."
+                f"Classe {class_name} tem {len(items)} imagens, mas precisa de pelo menos {expected_total}."
             )
 
-        idx = np.arange(len(files))
-        rng.shuffle(idx)
-        files = [files[i] for i in idx]
-
+        perm = rng.permutation(len(items))
+        shuffled = [items[i] for i in perm]
         n_train = counts["train"]
         n_val = counts["val"]
         n_test = counts["test"]
 
-        c_train = files[:n_train]
-        c_val = files[n_train : n_train + n_val]
-        c_test = files[n_train + n_val : n_train + n_val + n_test]
+        train_items.extend(shuffled[:n_train])
+        val_items.extend(shuffled[n_train : n_train + n_val])
+        test_items.extend(shuffled[n_train + n_val : n_train + n_val + n_test])
 
-        label = class_to_idx[class_name]
-        train_paths.extend([str(p) for p in c_train])
-        val_paths.extend([str(p) for p in c_val])
-        test_paths.extend([str(p) for p in c_test])
-        train_labels.extend([label] * len(c_train))
-        val_labels.extend([label] * len(c_val))
-        test_labels.extend([label] * len(c_test))
+    return _items_to_split_data(train_items, val_items, test_items, class_names)
 
-    return SplitData(
-        train_paths=train_paths,
-        train_labels=train_labels,
-        val_paths=val_paths,
-        val_labels=val_labels,
-        test_paths=test_paths,
-        test_labels=test_labels,
-        class_names=class_names,
-    )
+
+def generate_cv_split(
+    dataset_inventory: List[DatasetItem],
+    fold_index: int,
+    num_folds: int,
+    seed: int,
+    val_ratio: float = 1.0 / 9.0,
+) -> SplitData:
+    """Gera um fold estratificado de validacao cruzada.
+
+    Regras:
+    - teste = fold selecionado
+    - train/val = itens restantes
+    - val = subconjunto estratificado retirado apenas de train_val
+
+    Args:
+        dataset_inventory: inventario completo do dataset.
+        fold_index: indice do fold de teste a executar.
+        num_folds: quantidade total de folds.
+        seed: seed para determinismo.
+        val_ratio: proporcao de validacao retirada do conjunto train_val.
+
+    Returns:
+        SplitData: estrutura com train/val/test do fold solicitado.
+
+    Raises:
+        ValueError: se o fold solicitado for invalido.
+    """
+    if fold_index < 0 or fold_index >= num_folds:
+        raise ValueError(f"fold_index invalido: {fold_index}. Esperado entre 0 e {num_folds - 1}.")
+
+    grouped: Dict[int, List[DatasetItem]] = defaultdict(list)
+    for item in dataset_inventory:
+        grouped[item.class_idx].append(item)
+
+    class_names = [grouped[idx][0].class_name for idx in sorted(grouped.keys())]
+    train_items: List[DatasetItem] = []
+    val_items: List[DatasetItem] = []
+    test_items: List[DatasetItem] = []
+
+    for class_idx in sorted(grouped.keys()):
+        class_items = list(grouped[class_idx])
+        rng = np.random.default_rng(seed + class_idx)
+        perm = rng.permutation(len(class_items))
+        shuffled = [class_items[i] for i in perm]
+        buckets = [list(bucket) for bucket in np.array_split(np.array(shuffled, dtype=object), num_folds)]
+
+        class_test = [item for item in buckets[fold_index]]
+        class_train_val: List[DatasetItem] = []
+        for idx, bucket in enumerate(buckets):
+            if idx != fold_index:
+                class_train_val.extend(bucket)
+
+        if len(class_train_val) > 1:
+            val_rng = np.random.default_rng(seed + (fold_index + 1) * 1000 + class_idx)
+            val_perm = val_rng.permutation(len(class_train_val))
+            shuffled_train_val = [class_train_val[i] for i in val_perm]
+            n_val = int(round(len(shuffled_train_val) * val_ratio))
+            n_val = min(max(n_val, 1), len(shuffled_train_val) - 1)
+        else:
+            shuffled_train_val = class_train_val
+            n_val = 0
+
+        class_val = shuffled_train_val[:n_val]
+        class_train = shuffled_train_val[n_val:]
+
+        train_items.extend(class_train)
+        val_items.extend(class_val)
+        test_items.extend(class_test)
+
+    return _items_to_split_data(train_items, val_items, test_items, class_names)
+
+
+def create_split(dataset_dir: Path, seed: int) -> SplitData:
+    """Mantem compatibilidade com o comportamento historico do script.
+
+    Args:
+        dataset_dir: diretorio raiz contendo uma subpasta por classe.
+        seed: seed do embaralhamento deterministico.
+
+    Returns:
+        SplitData: split equivalente ao modo `paper`.
+    """
+    inventory, _class_names = build_dataset_inventory(dataset_dir)
+    return generate_paper_split(inventory, seed)
 
 
 def _load_image(path: tf.Tensor, label: tf.Tensor, image_size: int, num_classes: int):
@@ -657,7 +824,7 @@ def build_augmentation_config(args: argparse.Namespace) -> Optional[Augmentation
 
 
 def save_split_manifest(split: SplitData, run_dir: Path) -> None:
-    """Salva manifesto CSV detalhando cada arquivo por split e classe.
+    """Salva o manifesto padrao do split para o modo paper.
 
     Args:
         split: estrutura contendo caminhos e labels dos subconjuntos.
@@ -681,12 +848,91 @@ def save_split_manifest(split: SplitData, run_dir: Path) -> None:
             writer.writerow(["test", idx_to_class[y], y, p])
 
 
+
+def save_fold_manifest(split: SplitData, run_dir: Path, fold_index: int) -> None:
+    """Salva o manifesto completo de um fold de validacao cruzada.
+
+    Args:
+        split: estrutura contendo caminhos e labels dos subconjuntos.
+        run_dir: diretorio da execucao do fold.
+        fold_index: indice do fold executado.
+
+    Returns:
+        None.
+    """
+    out_csv = run_dir / "fold_manifest.csv"
+    with out_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["fold", "subset", "path", "class_name", "class_idx"])
+        idx_to_class = {i: n for i, n in enumerate(split.class_names)}
+
+        for p, y in zip(split.train_paths, split.train_labels):
+            writer.writerow([fold_index, "train", p, idx_to_class[y], y])
+        for p, y in zip(split.val_paths, split.val_labels):
+            writer.writerow([fold_index, "val", p, idx_to_class[y], y])
+        for p, y in zip(split.test_paths, split.test_labels):
+            writer.writerow([fold_index, "test", p, idx_to_class[y], y])
+
+
+
+def save_predictions_csv(
+    test_paths: List[str],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    pred_probs: np.ndarray,
+    class_names: List[str],
+    run_dir: Path,
+    fold_index: Optional[int],
+) -> None:
+    """Salva predicoes por amostra do conjunto de teste.
+
+    Args:
+        test_paths: caminhos das imagens de teste na mesma ordem das predicoes.
+        y_true: indices reais por amostra.
+        y_pred: indices previstos por amostra.
+        pred_probs: probabilidades previstas por amostra.
+        class_names: nomes das classes na ordem dos indices.
+        run_dir: diretorio onde o CSV sera salvo.
+        fold_index: indice do fold ou None para modo paper.
+
+    Returns:
+        None.
+    """
+    out_csv = run_dir / "predictions.csv"
+    with out_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "fold",
+                "path",
+                "true_class_idx",
+                "true_class_name",
+                "pred_class_idx",
+                "pred_class_name",
+                "correct",
+                "top1_confidence",
+            ]
+        )
+        fold_value = "paper" if fold_index is None else fold_index
+        for path_value, true_idx, pred_idx, probs in zip(test_paths, y_true.tolist(), y_pred.tolist(), pred_probs.tolist()):
+            top1_conf = float(max(probs)) if probs else 0.0
+            writer.writerow(
+                [
+                    fold_value,
+                    path_value,
+                    true_idx,
+                    class_names[true_idx],
+                    pred_idx,
+                    class_names[pred_idx],
+                    bool(true_idx == pred_idx),
+                    top1_conf,
+                ]
+            )
+
+
+
 def confusion_and_report(y_true: np.ndarray, y_pred: np.ndarray, class_names: List[str]) -> Dict:
     """Calcula matriz de confusao e metricas agregadas sem sklearn.
-
-    Metricas geradas:
-    - Por classe: precision, recall, f1, support.
-    - Globais: accuracy, macro average e weighted average.
 
     Args:
         y_true: vetor com labels reais (inteiros).
@@ -694,56 +940,103 @@ def confusion_and_report(y_true: np.ndarray, y_pred: np.ndarray, class_names: Li
         class_names: nomes das classes na ordem dos indices.
 
     Returns:
-        Dict: dicionario serializavel contendo matriz de confusao e metricas.
+        Dict: dicionario serializavel com metricas detalhadas e agregadas.
     """
     n = len(class_names)
     cm = np.zeros((n, n), dtype=np.int64)
     for t, p in zip(y_true, y_pred):
         cm[t, p] += 1
 
-    per_class = {}
-    precision_vals, recall_vals, f1_vals, support_vals = [], [], [], []
+    per_class_metrics = {}
+    precision_vals: List[float] = []
+    recall_vals: List[float] = []
+    f1_vals: List[float] = []
+    support_vals: List[int] = []
 
     for i, name in enumerate(class_names):
-        tp = cm[i, i]
-        fp = cm[:, i].sum() - tp
-        fn = cm[i, :].sum() - tp
-        tn = cm.sum() - (tp + fp + fn)
-        support = cm[i, :].sum()
+        tp = int(cm[i, i])
+        fp = int(cm[:, i].sum() - tp)
+        fn = int(cm[i, :].sum() - tp)
+        tn = int(cm.sum() - (tp + fp + fn))
+        support = int(cm[i, :].sum())
         precision = float(tp / (tp + fp)) if (tp + fp) else 0.0
         recall = float(tp / (tp + fn)) if (tp + fn) else 0.0
         f1 = float(2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-        class_acc = float((tp + tn) / cm.sum()) if cm.sum() else 0.0
+        accuracy = float((tp + tn) / cm.sum()) if cm.sum() else 0.0
 
-        per_class[name] = {
+        per_class_metrics[name] = {
             "precision": precision,
             "recall": recall,
             "f1": f1,
-            "accuracy": class_acc,
-            "support": int(support),
+            "accuracy": accuracy,
+            "support": support,
         }
         precision_vals.append(precision)
         recall_vals.append(recall)
         f1_vals.append(f1)
-        support_vals.append(int(support))
+        support_vals.append(support)
+
+    total = int(cm.sum())
+    tp_total = int(np.trace(cm))
+    fp_total = total - tp_total
+    fn_total = total - tp_total
 
     accuracy = float((y_true == y_pred).mean()) if len(y_true) else 0.0
-    macro = {
-        "precision": float(np.mean(precision_vals)) if precision_vals else 0.0,
-        "recall": float(np.mean(recall_vals)) if recall_vals else 0.0,
-        "f1": float(np.mean(f1_vals)) if f1_vals else 0.0,
-    }
+    macro_precision = float(np.mean(precision_vals)) if precision_vals else 0.0
+    macro_recall = float(np.mean(recall_vals)) if recall_vals else 0.0
+    macro_f1 = float(np.mean(f1_vals)) if f1_vals else 0.0
+
+    micro_precision = float(tp_total / (tp_total + fp_total)) if (tp_total + fp_total) else 0.0
+    micro_recall = float(tp_total / (tp_total + fn_total)) if (tp_total + fn_total) else 0.0
+    micro_f1 = (
+        float(2 * micro_precision * micro_recall / (micro_precision + micro_recall))
+        if (micro_precision + micro_recall)
+        else 0.0
+    )
+
     weights = np.array(support_vals, dtype=np.float64)
     if weights.sum() == 0:
-        weighted = {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+        weighted_precision = 0.0
+        weighted_recall = 0.0
+        weighted_f1 = 0.0
     else:
-        weighted = {
-            "precision": float(np.average(precision_vals, weights=weights)),
-            "recall": float(np.average(recall_vals, weights=weights)),
-            "f1": float(np.average(f1_vals, weights=weights)),
-        }
+        weighted_precision = float(np.average(precision_vals, weights=weights))
+        weighted_recall = float(np.average(recall_vals, weights=weights))
+        weighted_f1 = float(np.average(f1_vals, weights=weights))
 
-    return {"confusion_matrix": cm.tolist(), "per_class": per_class, "accuracy": accuracy, "macro": macro, "weighted": weighted}
+    support_per_class = {name: int(per_class_metrics[name]["support"]) for name in class_names}
+    return {
+        "accuracy": accuracy,
+        "macro_precision": macro_precision,
+        "macro_recall": macro_recall,
+        "macro_f1": macro_f1,
+        "micro_precision": micro_precision,
+        "micro_recall": micro_recall,
+        "micro_f1": micro_f1,
+        "weighted_precision": weighted_precision,
+        "weighted_recall": weighted_recall,
+        "weighted_f1": weighted_f1,
+        "macro": {
+            "precision": macro_precision,
+            "recall": macro_recall,
+            "f1": macro_f1,
+        },
+        "micro": {
+            "precision": micro_precision,
+            "recall": micro_recall,
+            "f1": micro_f1,
+        },
+        "weighted": {
+            "precision": weighted_precision,
+            "recall": weighted_recall,
+            "f1": weighted_f1,
+        },
+        "per_class": per_class_metrics,
+        "per_class_metrics": per_class_metrics,
+        "support_per_class": support_per_class,
+        "confusion_matrix": cm.tolist(),
+    }
+
 
 
 def save_history(histories: List[tf.keras.callbacks.History], run_dir: Path) -> None:
@@ -1123,124 +1416,139 @@ def save_run_plots(
     )
 
 
-def main() -> None:
-    """Executa pipeline completo: split, treino em duas fases e avaliacao.
-
-    Fluxo:
-    1. Le argumentos e valida configuracao.
-    2. Cria split deterministico por classe.
-    3. Monta datasets TensorFlow.
-    4. Treina cabeca com backbone congelado.
-    5. Fine-tuning com todas as camadas destravadas.
-    6. Avalia no teste e salva artefatos.
+def _prepare_run_dirs(
+    args: argparse.Namespace,
+    fold_index: Optional[int],
+) -> Tuple[Path, Path]:
+    """Define os diretorios de artefatos e TensorBoard para um experimento.
 
     Args:
-        Nenhum argumento direto. A funcao usa parse_args().
+        args: configuracao completa da execucao.
+        fold_index: indice do fold ou None para modo paper.
 
     Returns:
-        None.
-
-    Raises:
-        ValueError: se total de epocas for menor que epocas de congelamento.
-        FileNotFoundError: se diretorio do dataset nao existir.
-        RuntimeError: se --device gpu for solicitado sem GPU disponivel.
+        Tuple[Path, Path]:
+            - diretorio do run.
+            - diretorio de logs do TensorBoard.
     """
-    args = parse_args()
-
-    # Garante que caminhos com barra invertida (Windows) funcionem no Linux/WSL
-    if args.dataset_dir:
-        args.dataset_dir = args.dataset_dir.replace("\\", "/")
-
-    # Verificacao explicita de GPU para evitar treino lento acidental
-    print(f"TensorFlow Version: {tf.__version__}")
-    gpus = configure_runtime(device=args.device, use_mixed_precision=args.mixed_precision)
-    if gpus:
-        print(f"SUCESSO: {len(gpus)} GPU(s) detectada(s): {gpus}")
-        print(f"Mixed precision policy: {mixed_precision.global_policy()}")
+    if args.experiment_mode == "paper":
+        run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = (Path(args.out_dir) / run_name).resolve()
+        tb_dir = (Path(args.tb_root_dir) / run_name).resolve()
     else:
-        print("ATENCAO: Nenhuma GPU detectada. O codigo rodara na CPU.")
+        if fold_index is None:
+            raise ValueError("fold_index e obrigatorio para preparar diretorios em modo cv.")
+        run_dir = (Path(args.out_dir) / f"fold_{fold_index}").resolve()
+        tb_dir = (Path(args.tb_root_dir) / f"fold_{fold_index}").resolve()
 
-    if args.total_epochs < args.freeze_epochs:
-        raise ValueError("--total-epochs deve ser >= --freeze-epochs")
-
-    set_seeds(args.seed)
-    augmentation_config = build_augmentation_config(args)
-    dataset_dir = Path(args.dataset_dir).resolve()
-    if not dataset_dir.exists():
-        raise FileNotFoundError(f"Dataset nao encontrado: {dataset_dir}")
-
-    run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = (Path(args.out_dir) / run_name).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+    return run_dir, tb_dir
+
+
+
+def _prepare_tensorboard_dir(tb_dir: Path, disable_tensorboard: bool) -> Tuple[bool, bool]:
+    """Valida o caminho do TensorBoard e decide se o callback sera habilitado.
+
+    Args:
+        tb_dir: diretorio de logs pretendido para TensorBoard.
+        disable_tensorboard: flag explicita para desligar TensorBoard.
+
+    Returns:
+        Tuple[bool, bool]:
+            - se o TensorBoard esta habilitado para o run.
+            - se o caminho e ASCII-safe.
+    """
+    if disable_tensorboard:
+        return False, True
+
+    tb_str = str(tb_dir)
+    try:
+        tb_str.encode("ascii")
+    except UnicodeEncodeError:
+        print(
+            "TensorBoard desativado automaticamente: caminho com caracteres nao-ASCII.",
+            flush=True,
+        )
+        print(f"Caminho detectado: {tb_dir}", flush=True)
+        return False, False
+
+    tb_dir.mkdir(parents=True, exist_ok=True)
+    return True, True
+
+
+
+def run_single_experiment(
+    split: SplitData,
+    config: argparse.Namespace,
+    run_dir: Path,
+    tb_dir: Path,
+    fold_index: Optional[int] = None,
+) -> Dict:
+    """Executa um treinamento completo a partir de um split externo.
+
+    Args:
+        split: estrutura com train/val/test ja definidos.
+        config: argumentos completos de configuracao do experimento.
+        run_dir: diretorio onde os artefatos do run serao salvos.
+        tb_dir: diretorio base de logs do TensorBoard para este run.
+        fold_index: indice do fold no modo cv ou None no modo paper.
+
+    Returns:
+        Dict: metricas finais consolidadas do experimento.
+    """
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    tb_enabled, _tb_safe = _prepare_tensorboard_dir(tb_dir, config.disable_tensorboard)
 
-    tb_dir = (Path(args.tb_root_dir) / run_name).resolve()
-    tb_safe = True
-    if not args.disable_tensorboard:
-        tb_str = str(tb_dir)
-        try:
-            tb_str.encode("ascii")
-        except UnicodeEncodeError:
-            tb_safe = False
-            print(
-                "TensorBoard desativado automaticamente: caminho com caracteres nao-ASCII.",
-                flush=True,
-            )
-            print(f"Caminho detectado: {tb_dir}", flush=True)
-            print(
-                "Sugestao: execute o projeto por um caminho sem acentos ou use --disable-tensorboard.",
-                flush=True,
-            )
-        if tb_safe:
-            tb_dir.mkdir(parents=True, exist_ok=True)
+    if fold_index is None:
+        save_split_manifest(split, run_dir)
+    else:
+        save_fold_manifest(split, run_dir, fold_index)
 
-    split = create_split(dataset_dir=dataset_dir, seed=args.seed)
-    save_split_manifest(split, run_dir)
-
+    augmentation_config = build_augmentation_config(config)
     train_ds = make_dataset(
         split.train_paths,
         split.train_labels,
-        args.image_size,
-        args.batch_size,
+        config.image_size,
+        config.batch_size,
         training=True,
-        num_parallel_calls=args.num_parallel_calls,
-        prefetch_size=args.prefetch_size,
+        num_parallel_calls=config.num_parallel_calls,
+        prefetch_size=config.prefetch_size,
         augmentation_config=augmentation_config,
     )
     val_ds = make_dataset(
         split.val_paths,
         split.val_labels,
-        args.image_size,
-        args.batch_size,
+        config.image_size,
+        config.batch_size,
         training=False,
-        num_parallel_calls=args.num_parallel_calls,
-        prefetch_size=args.prefetch_size,
+        num_parallel_calls=config.num_parallel_calls,
+        prefetch_size=config.prefetch_size,
         augmentation_config=None,
     )
     test_ds = make_dataset(
         split.test_paths,
         split.test_labels,
-        args.image_size,
-        args.batch_size,
+        config.image_size,
+        config.batch_size,
         training=False,
-        num_parallel_calls=args.num_parallel_calls,
-        prefetch_size=args.prefetch_size,
+        num_parallel_calls=config.num_parallel_calls,
+        prefetch_size=config.prefetch_size,
         augmentation_config=None,
     )
 
     print("Construindo modelo InceptionV3...", flush=True)
     model, backbone = build_model(
         num_classes=len(split.class_names),
-        dense_units=args.dense_units,
-        image_size=args.image_size,
+        dense_units=config.dense_units,
+        image_size=config.image_size,
     )
 
-    # Phase 1: train added head with frozen backbone.
     backbone.trainable = False
-
     print("Compilando modelo...", flush=True)
-    compile_model(model, lr=args.lr, jit_compile=args.jit_compile)
+    compile_model(model, lr=config.lr, jit_compile=config.jit_compile)
+
     best_ckpt_path = ckpt_dir / "best_model.keras"
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
@@ -1260,12 +1568,12 @@ def main() -> None:
         tf.keras.callbacks.EarlyStopping(
             monitor="val_accuracy",
             mode="max",
-            patience=args.early_stopping_patience,
+            patience=config.early_stopping_patience,
             restore_best_weights=True,
             verbose=1,
         ),
     ]
-    if not args.disable_tensorboard and tb_safe:
+    if tb_enabled:
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=str(tb_dir.as_posix())))
     else:
         print("TensorBoard desativado.")
@@ -1274,41 +1582,34 @@ def main() -> None:
     hist_1 = model.fit(
         train_ds,
         validation_data=val_ds,
-        epochs=args.freeze_epochs,
+        epochs=config.freeze_epochs,
         callbacks=callbacks,
     )
 
-    # Phase 2: unfreeze all layers and fine-tune with a lower LR.
     backbone.trainable = True
+    fine_tune_lr = config.lr * config.fine_tune_lr_multiplier
+    compile_model(model, lr=fine_tune_lr, jit_compile=config.jit_compile)
 
-    fine_tune_lr = args.lr * args.fine_tune_lr_multiplier
-    compile_model(model, lr=fine_tune_lr, jit_compile=args.jit_compile)
+    print("Iniciando treinamento (Fase 2)...", flush=True)
     hist_2 = model.fit(
         train_ds,
         validation_data=val_ds,
-        initial_epoch=args.freeze_epochs,
-        epochs=args.total_epochs,
+        initial_epoch=config.freeze_epochs,
+        epochs=config.total_epochs,
         callbacks=callbacks,
     )
 
-    # Reload best checkpoint for test metrics.
     best_model = tf.keras.models.load_model(best_ckpt_path)
     eval_values = best_model.evaluate(test_ds, return_dict=True, verbose=1)
-
-    y_true = np.array(split.test_labels, dtype=np.int64)
     pred_probs = best_model.predict(test_ds, verbose=1)
+    y_true = np.array(split.test_labels, dtype=np.int64)
     y_pred = np.argmax(pred_probs, axis=1)
 
     report = confusion_and_report(y_true=y_true, y_pred=y_pred, class_names=split.class_names)
     report["keras_evaluate"] = eval_values
+    report["experiment_mode"] = config.experiment_mode
+    report["fold"] = fold_index
 
-    cm = np.array(report["confusion_matrix"], dtype=np.int64)
-    np.savetxt(run_dir / "confusion_matrix.csv", cm, fmt="%d", delimiter=",")
-
-    with (run_dir / "metrics.json").open("w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
-
-    save_history([hist_1, hist_2], run_dir)
     train_acc_hist = hist_1.history.get("accuracy", []) + hist_2.history.get("accuracy", [])
     val_acc_hist = hist_1.history.get("val_accuracy", []) + hist_2.history.get("val_accuracy", [])
     train_loss_hist = hist_1.history.get("loss", []) + hist_2.history.get("loss", [])
@@ -1321,15 +1622,26 @@ def main() -> None:
         "loss": [float(x) for x in train_loss_hist],
         "val_loss": [float(x) for x in val_loss_hist],
     }
+
     totals = compute_data_totals(
         split=split,
         total_epochs=trained_epochs,
         augmentation_config=augmentation_config,
     )
     report["data_totals"] = totals
-    with (run_dir / "metrics.json").open("w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=2)
 
+    cm = np.array(report["confusion_matrix"], dtype=np.int64)
+    np.savetxt(run_dir / "confusion_matrix.csv", cm, fmt="%d", delimiter=",")
+    save_predictions_csv(
+        test_paths=split.test_paths,
+        y_true=y_true,
+        y_pred=y_pred,
+        pred_probs=pred_probs,
+        class_names=split.class_names,
+        run_dir=run_dir,
+        fold_index=fold_index,
+    )
+    save_history([hist_1, hist_2], run_dir)
     save_run_plots(
         run_dir=run_dir,
         history=history_data,
@@ -1337,24 +1649,86 @@ def main() -> None:
         test_loss=float(eval_values.get("loss", 0.0)),
         confusion_matrix=report["confusion_matrix"],
         class_names=split.class_names,
-        per_class_metrics=report["per_class"],
+        per_class_metrics=report["per_class_metrics"],
     )
     best_model.save(run_dir / "final_model.keras")
 
+    with (run_dir / "metrics.json").open("w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+    run_config = vars(config).copy()
+    run_config["fold_index"] = fold_index
     with (run_dir / "run_config.json").open("w", encoding="utf-8") as f:
-        json.dump(vars(args), f, ensure_ascii=False, indent=2)
+        json.dump(run_config, f, ensure_ascii=False, indent=2)
 
     print(f"Treinamento finalizado. Artefatos em: {run_dir.resolve()}")
     print(f"Acuracia de teste (Keras): {eval_values.get('accuracy', 0.0):.4f}")
     print(f"Acuracia de teste (manual): {report.get('accuracy', 0.0):.4f}")
-    print(
-        "Totais de dados (treino) -> "
-        f"modo_aug={totals['augmentation_mode']}, "
-        f"variantes_por_imagem={totals['variants_per_real_image']}, "
-        f"reais_unicas={totals['train_real_unique']}, "
-        f"reais_processadas={totals['train_real_exposures_total']}, "
-        f"augmentadas_geradas={totals['train_augmented_generated_total']}, "
-        f"total_geral={totals['train_grand_total']}"
+    return report
+
+
+
+def main() -> None:
+    """Executa o experimento em modo paper ou cv para um fold especifico.
+
+    Args:
+        Nenhum argumento direto. A funcao usa parse_args().
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: se os parametros de fold forem invalidos.
+        FileNotFoundError: se o dataset informado nao existir.
+        RuntimeError: se GPU for exigida e nao estiver disponivel.
+    """
+    args = parse_args()
+
+    if args.dataset_dir:
+        args.dataset_dir = args.dataset_dir.replace("\\\\", "/")
+
+    print(f"TensorFlow Version: {tf.__version__}")
+    gpus = configure_runtime(device=args.device, use_mixed_precision=args.mixed_precision)
+    if gpus:
+        print(f"SUCESSO: {len(gpus)} GPU(s) detectada(s): {gpus}")
+        print(f"Mixed precision policy: {mixed_precision.global_policy()}")
+    else:
+        print("ATENCAO: Nenhuma GPU detectada. O codigo rodara na CPU.")
+
+    if args.total_epochs < args.freeze_epochs:
+        raise ValueError("--total-epochs deve ser >= --freeze-epochs")
+    if args.num_folds < 2:
+        raise ValueError("--num-folds deve ser >= 2")
+
+    set_seeds(args.seed)
+    dataset_dir = Path(args.dataset_dir).resolve()
+    if not dataset_dir.exists():
+        raise FileNotFoundError(f"Dataset nao encontrado: {dataset_dir}")
+
+    inventory, _class_names = build_dataset_inventory(dataset_dir)
+
+    if args.experiment_mode == "paper":
+        split = generate_paper_split(inventory, args.seed)
+        run_dir, tb_dir = _prepare_run_dirs(args, fold_index=None)
+        run_single_experiment(split=split, config=args, run_dir=run_dir, tb_dir=tb_dir, fold_index=None)
+        return
+
+    if args.fold_index is None:
+        raise ValueError("Modo cv requer --fold-index. Para executar todos os folds, use run_inception_cv.py.")
+
+    split = generate_cv_split(
+        dataset_inventory=inventory,
+        fold_index=args.fold_index,
+        num_folds=args.num_folds,
+        seed=args.seed,
+    )
+    run_dir, tb_dir = _prepare_run_dirs(args, fold_index=args.fold_index)
+    run_single_experiment(
+        split=split,
+        config=args,
+        run_dir=run_dir,
+        tb_dir=tb_dir,
+        fold_index=args.fold_index,
     )
 
 
