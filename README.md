@@ -1,6 +1,6 @@
 # Classificacao de Graos de Soja com InceptionV3 Modificado
 
-Este projeto reproduz, de forma aproximada, o artigo de classificacao de sementes de soja com `InceptionV3` modificada.
+Este projeto reproduz, de forma aproximada, o artigo de classificacao de sementes de soja com `InceptionV3` modificada, publicado em https://ejfa.pensoft.net/article/122928/
 
 ## Modos de execucao
 
