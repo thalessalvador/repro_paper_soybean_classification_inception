@@ -88,7 +88,94 @@ Se a porta estiver ocupada:
 tensorboard --logdir C:\tb_logs\soy_inception --port 6007
 ```
 
-## Opcao B: Windows + Docker Desktop (GPU)
+## Opcao B: Linux local (CPU ou GPU)
+
+Use esta opcao se voce estiver executando o projeto diretamente em uma distribuicao Linux.
+
+### 1. Criar a `.venv`
+
+No terminal, dentro da pasta do projeto:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python --version
+```
+
+### 2. Instalar dependencias
+
+Se o ambiente Linux tiver suporte CUDA/TensorFlow funcional, voce pode usar o `requirements.txt` atual:
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Se quiser rodar em CPU no Linux, use a instalacao manual abaixo:
+
+```bash
+python -m pip install --upgrade pip
+pip install "tensorflow==2.16.2" "numpy>=1.22" "matplotlib>=3.8"
+pip install --upgrade setuptools==69.5.1 tensorboard
+```
+
+### 3. Rodar treino simples
+
+```bash
+cd ~/projects/impl-art-inception
+source .venv/bin/activate
+python train_modified_inception_repro.py --dataset-dir ../dataset_kaggle_soja --disable-tensorboard
+```
+
+### 4. Rodar treino + TensorBoard
+
+Terminal 1:
+
+```bash
+source .venv/bin/activate
+python train_modified_inception_repro.py \
+  --dataset-dir ../dataset_kaggle_soja \
+  --out-dir ./runs_modified_inception \
+  --tb-root-dir ./tf_tb_logs
+```
+
+Terminal 2:
+
+```bash
+source .venv/bin/activate
+tensorboard --logdir ./tf_tb_logs
+```
+
+Abrir no navegador:
+
+```text
+http://localhost:6006
+```
+
+### 5. Rodar cross-validation completa no Linux
+
+```bash
+source .venv/bin/activate
+python run_inception_cv.py \
+  --dataset-dir ../dataset_kaggle_soja \
+  --out-dir ./experiments_inception \
+  --batch-size 24 \
+  --tb-root-dir ./tf_tb_logs
+```
+
+Se quiser obrigar o uso de GPU e falhar cedo quando ela nao estiver visivel ao TensorFlow:
+
+```bash
+source .venv/bin/activate
+python run_inception_cv.py \
+  --dataset-dir ../dataset_kaggle_soja \
+  --out-dir ./experiments_inception \
+  --batch-size 24 \
+  --tb-root-dir ./tf_tb_logs \
+  --device gpu
+```
+
+## Opcao C: Windows + Docker Desktop (GPU)
 
 Este fluxo depende de:
 
