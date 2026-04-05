@@ -187,7 +187,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--early-stopping-patience",
         type=int,
-        default=50,
+        default=10,
         help="Paciencia do EarlyStopping monitorando val_accuracy.",
     )
     parser.add_argument(
